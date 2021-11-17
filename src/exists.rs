@@ -1,4 +1,4 @@
-use core::cell::Cell;
+use core::cell::{Cell, UnsafeCell};
 use core::marker::PhantomData;
 use core::ptr;
 
@@ -42,13 +42,9 @@ use core::ptr;
 ///
 /// # TODO
 ///
-/// - How sound is this with `-Zmiri-track-raw-pointers`?
 /// - Can `&'a mut Exists<T>` and `&'b mut T` coexist soundly if the former isn't used during `'b`?
-/// - Check up on thread safety - this should disable `Sync`/`Send`, correct?
 /// - Can interior mutability screw up the invariants of `as_ref` and ilk? May need more precise wording.
-/// - Determine if there's a sneaky way to get a `Exists<T>` without using `unsafe` - which would be unsound.
-/// - Should `Exists<T>` be invariant over `T`? It is currently covariant.
-pub struct Exists<T>(PhantomData<(T, *const T)>);
+pub struct Exists<T>(PhantomData<(UnsafeCell<T>, *const T)>);
 
 impl<T> Exists<T> {
     /// "Casts" a shared const reference to a const existential reference.
@@ -163,9 +159,30 @@ impl<T> Exists<T> {
     /// - [Valid][valid] for writes the size of `T`
     /// - Not aliasing a `&T` or `&mut T`, since that would disallow safe writes
     ///
-    /// If the result does perform any writes, this function will not cause additional UB.
+    /// If the resulting `&mut Exists<T>` doesn't perform any writes,
+    /// this function will not invoke UB on its own.
     ///
-    /// TODO: confirm if i'm cuckoo bananas here
+    /// # Example
+    /// ```
+    /// # use exists_ref::Exists;
+    /// let get_writeable = true;
+    /// let x = 0;
+    /// let mut y = 1;
+    /// let e: &Exists<i32> = if get_writeable {
+    ///   Exists::from_mut(&mut y)
+    ///   // This would invoke UB, since it would write to a `&T`!
+    ///   // Exists::from_ref(&y)
+    /// } else {
+    ///   Exists::from_ref(&x)
+    /// };
+    /// // ...
+    /// if get_writeable {
+    ///   // Safety: `e` was definitely derived from a `&mut i32`.
+    ///   unsafe { e.assume_mut() }.set(5);
+    ///   assert_eq!(y, 5);
+    /// }
+    /// assert_eq!(x, 0);
+    /// ```
     pub unsafe fn assume_mut(&self) -> &mut Self {
         &mut *(self as *const Self as *mut Self)
     }
@@ -224,7 +241,6 @@ impl<T> Exists<T> {
     /// let a: &mut Exists<u32> = (&mut x).into();
     /// let b: &u32 = unsafe { a.as_ref_unchecked() };
     /// assert_eq!(*b, 10);
-    /// // this is UB: assert_eq!(a.set());
     /// ```
     ///
     /// [valid]: https://doc.rust-lang.org/std/ptr/index.html#safety
@@ -235,7 +251,7 @@ impl<T> Exists<T> {
     /// # Safety
     /// For the duration of lifetime `'a`, `data` must be:
     /// - Pointing to a properly initialized value of type `T`
-    /// - [Valid][valid] for oth reads the size of `T`
+    /// - [Valid][valid] for both reads and writes the size of `T`
     /// - Properly aligned
     /// - Not aliasing a `&T` or `&mut T`
     ///
@@ -293,12 +309,12 @@ impl<T> Exists<T> {
 }
 
 impl<T: Copy> Exists<T> {
-    /// Gets the value at the referenced location. Equivalent to a raw pointer read.
+    /// Gets the value at the address of `&self`. Equivalent to a raw pointer read.
     pub fn get(&self) -> T {
         unsafe { self.as_ptr().read() }
     }
 
-    /// Sets a value to the referenced location. Equivalent to a raw pointer write.
+    /// Sets a value at the address of `&mut self`. Equivalent to a raw pointer write.
     pub fn set(&mut self, src: T) {
         unsafe { self.as_mut_ptr().write(src) }
     }
@@ -359,8 +375,22 @@ impl<'a, T: 'a> From<&'a Exists<Cell<T>>> for &'a mut Exists<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    pub fn mut_roundtrip() {
+    fn trivial_read() {
+        let x = 10;
+        assert_eq!(Exists::from_ref(&x).get(), 10);
+    }
+
+    #[test]
+    fn trivial_write() {
+        let mut x = 10;
+        assert_eq!(Exists::from_mut(&mut x).replace(20), 10);
+        assert_eq!(x, 20);
+    }
+
+    #[test]
+    fn mut_roundtrip() {
         let mut x: u64 = 10;
         let xe: &mut Exists<u64> = (&mut x).into();
 
@@ -380,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    pub fn immut_roundtrip() {
+    fn immut_roundtrip() {
         let x: u64 = 10;
         let xe: &Exists<u64> = Exists::from_ref(&x);
 
@@ -392,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    pub fn cell_roundtrip() {
+    fn cell_roundtrip() {
         let x: Cell<u64> = Cell::new(10);
         let xe: &Exists<u64> = Exists::from_cell(&x);
         assert_eq!(xe.get(), 10);
@@ -403,11 +433,38 @@ mod tests {
     }
 
     #[test]
-    pub fn test_box() {
+    fn test_box() {
         extern crate alloc;
         use alloc::boxed::Box;
         let x: Box<Cell<u64>> = Box::new(Cell::new(10));
         let _xe: &mut Exists<u64> = Exists::from_cell(&x);
+    }
+
+    #[test]
+    fn copy_mut_ref() {
+        let mut x = 10;
+        let e = Exists::from_mut(&mut x);
+        let [e1, e2] = e.copy_mut();
+
+        // TODO: this violates the invariants of as_mut_unchecked() technically
+        let e1: &mut i32 = unsafe { e1.as_mut_unchecked() };
+        *e1 = 20;
+        let e2: &mut i32 = unsafe { e2.as_mut_unchecked() };
+        *e2 = 30;
+        assert_eq!(x, 30);
+    }
+
+    #[test]
+    fn copy_mut_ref_via_assume_mut() {
+        let mut x = 10;
+        let e1: &Exists<_> = Exists::from_mut(&mut x);
+        let e2 = e1;
+
+        let e1: &mut i32 = unsafe { e1.assume_mut().as_mut_unchecked() };
+        *e1 = 20;
+        let e2: &mut i32 = unsafe { e2.assume_mut().as_mut_unchecked() };
+        *e2 = 30;
+        assert_eq!(x, 30);
     }
 
     // TODO: more rigorous testing

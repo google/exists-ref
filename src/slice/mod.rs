@@ -8,6 +8,7 @@
 use core::cell::Cell;
 use core::ops::Index;
 use core::ops::IndexMut;
+use core::ptr;
 
 use crate::Exists;
 
@@ -128,13 +129,11 @@ impl<T> SliceExists<T> {
     ///
     /// Since this type does not assert aliasing of pointed memory, this can be done safely.
     ///
-    /// TODO: confirm if I'm cuckoo bananas here
-    ///
     /// # Examples
     /// ```
     /// # use exists_ref::SliceExists;
     /// let mut x = [10u32; 10];
-    /// let a: &mut SliceExists<u32> = (&mut x[..]).into();
+    /// let a: &mut SliceExists<u32> = SliceExists::from_mut(&mut x);
     /// let [a, b] = a.copy_mut();
     /// a[2].set(20);
     /// b[2].set(30);
@@ -153,16 +152,53 @@ impl<T> SliceExists<T> {
         self.0.len()
     }
 
-    /// Returns a raw pointer to the existing slice's buffer.
+    /// Returns a raw pointer to first element in the slice's buffer.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
         self.0.as_ptr() as *const T
     }
 
-    /// Returns a raw mutable pointer to the existing slice's buffer.
+    /// Returns a raw mutable pointer to the first element in the slice's buffer.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
         self.0.as_mut_ptr() as *mut T
+    }
+
+    #[inline]
+    pub fn as_raw_slice(&self) -> *const [T] {
+        ptr::slice_from_raw_parts(self.as_ptr(), self.len())
+    }
+
+    /// Returns a shared reference that this `Exists<T>` points to.
+    ///
+    /// # Safety
+    /// For the duration of lifetime `'a`, `data` with length metadata `len` must be:
+    /// - [Valid][valid] for reads for `len * mem::size_of::<T>()` many bytes.
+    /// - Pointing to `len` contiguous properly initialized values of type `T`.
+    /// - Properly aligned
+    /// - Pointing to memory that will not mutate unless behind an `UnsafeCell`.
+    ///   This *includes* writing via [`Exists::set`].
+    /// - Not aliasing a `&UnsafeCell<[T]>` or `&mut [T]`
+    ///
+    /// You must enforce Rust's aliasing rules regarding `&[T]`.
+    /// In particular, for the duration of this lifetime, the
+    /// pointee must not get mutated (except inside `UnsafeCell`).
+    /// This applies even if the result is unused.
+    ///
+    /// # Examples
+    /// ```
+    /// # use exists_ref::SliceExists;
+    /// let mut x = [10, 20];
+    /// let a: &mut SliceExists<u32> = SliceExists::from_mut(&mut x);
+    /// let b: &[u32] = unsafe { a.as_ref_unchecked() };
+    /// // would UB here if the lifetimes didn't prevent compilation:
+    /// // a[0].set(30);
+    /// assert_eq!([b[0], b[1]], [10, 20]);
+    /// ```
+    ///
+    /// [valid]: https://doc.rust-lang.org/std/ptr/index.html#safety
+    pub unsafe fn as_ref_unchecked(&self) -> &[T] {
+        &*self.as_raw_slice()
     }
 
     /// Returns an existential reference to an element or subslice depending on the type of index.

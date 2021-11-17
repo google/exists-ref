@@ -61,7 +61,7 @@
 //! assert_eq!(y.get(), 40);
 //! ```
 //!
-//! `&mut Exists<T>` can be copied and "alias" each other
+//! `&mut Exists<T>` can be copied and "alias" each other.
 //! ```
 //! # use exists_ref::Exists;
 //! fn double_value(x: &mut Exists<i32>) {
@@ -77,6 +77,13 @@
 //!
 //! TODO: examples using raw pointers
 //!
+//! # Interaction with Stacked Borrows
+//!
+//! This library is tested under [Miri][miri] with the default flags.
+//! However, that does not mean it will always pass under Miri as the memory model evolves.
+//! Notably, `-Zmiri-track-raw-pointers` will state `Exists::from_ref(&x).get()` is UB.
+//!
+//! [miri]: https://github.com/rust-lang/miri
 //! [zst]: https://github.com/rust-lang/rust-memory-model/issues/44
 
 #![no_std]
