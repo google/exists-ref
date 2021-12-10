@@ -79,9 +79,28 @@
 //!
 //! # Interaction with Stacked Borrows
 //!
-//! This library is tested under [Miri][miri] with the default flags.
+//! This crate is tested under [Miri][miri] with the default flags.
 //! However, that does not mean it will always pass under Miri as the memory model evolves.
-//! Notably, `-Zmiri-track-raw-pointers` will state `Exists::from_ref(&x).get()` is UB.
+//! It also does not guarantee that this crate cannot cause Undefined Behavior.
+//!
+//! This crate is entirely incompatible with the current implementation of `-Zmiri-tag-raw-pointers`.
+//! This is because the cast to a ZST reference will perform a retag,
+//! so a round trip cast of `*const T` to `&Exists<T>` back to `*const T` results in a pointer
+//! that has a different tag than what is on the borrow stack.
+//! Without the flag, the borrow stack will have an untagged entry that the `*const T` can use,
+//! and the round trip succeeds.
+//!
+//! The below is enough to trigger Miri with `-Zmiri-tag-raw-pointers`:
+//!
+//! ```
+//! assert_eq!(
+//! unsafe {
+//!     (
+//!         &*(&10 as *const i32 as *const ())
+//!         as *const () as *const i32
+//!     ).read()
+//! }, 10);
+//! ```
 //!
 //! [miri]: https://github.com/rust-lang/miri
 //! [zst]: https://github.com/rust-lang/rust-memory-model/issues/44
