@@ -44,6 +44,10 @@ use core::ptr;
 ///
 /// - Can `&'a mut Exists<T>` and `&'b mut T` coexist soundly if the former isn't used during `'b`?
 /// - Can interior mutability screw up the invariants of `as_ref` and ilk? May need more precise wording.
+/// - Are existing pointer provenance rules what the author thinks they are? Do `*const/mut T` pointers
+///   derived from an `&/&mut Exists<T>` follow the necessary pointer provenance rules to be able to
+///   perform reads, writes, and unsafe casts to `&T/&mut T/&Cell<T>` as described, even
+///   in the case of inlining?
 pub struct Exists<T>(PhantomData<(UnsafeCell<T>, *const T)>);
 
 impl<T> Exists<T> {
